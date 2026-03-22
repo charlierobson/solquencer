@@ -10,6 +10,13 @@ import kickSample from './assets/samples/kick.wav';
 import snareSample from './assets/samples/snare.wav';
 import hihatSample from './assets/samples/hihat.wav';
 
+import surdu_low_normal from './assets/samples/surdu-low-normal.wav';
+import surdu_low_accented from './assets/samples/surdu-low-accented.wav';
+import surdu_high_normal from './assets/samples/surdu-high-normal.wav';
+import surdu_high_accented from './assets/samples/surdu-high-accented.wav';
+
+import Instructions from './Instructions';
+
 // ------------------------
 // Sequencer Core
 // ------------------------
@@ -30,7 +37,24 @@ class DrumSequencer {
 
     this.timerID = null;
     this.buffers = {};
+
+    // Add reverb for more natural sound
+    this.reverb = this.createReverb();
     this.onStep = onStep;
+  }
+
+  createReverb() {
+    const convolver = this.audioContext.createConvolver();
+    const length = this.audioContext.sampleRate * 0.3; // 0.3 second reverb (shorter)
+    const impulse = this.audioContext.createBuffer(2, length, this.audioContext.sampleRate);
+    for (let channel = 0; channel < 2; channel++) {
+      const channelData = impulse.getChannelData(channel);
+      for (let i = 0; i < length; i++) {
+        channelData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 2) * 0.05; // even more subtle
+      }
+    }
+    convolver.buffer = impulse;
+    return convolver;
   }
 
   async loadSample(id, url) {
@@ -62,14 +86,29 @@ class DrumSequencer {
       const buffer = this.buffers[event.instrument];
       if (!buffer) return;
 
+      // Humanization: add random timing offset (±10ms) and velocity variation (80-120%)
+      const timingOffset = (Math.random() - 0.5) * 0.02; // ±10ms
+      const velocityVariation = 0.8 + Math.random() * 0.4; // 0.8 to 1.2
+      const adjustedTime = time + timingOffset;
+      const adjustedVelocity = event.velocity * velocityVariation;
+
       const source = this.audioContext.createBufferSource();
       source.buffer = buffer;
 
       const gainNode = this.audioContext.createGain();
-      gainNode.gain.value = event.velocity ?? 1;
+      gainNode.gain.value = Math.max(0, Math.min(1, adjustedVelocity)); // clamp to 0-1
 
-      source.connect(gainNode).connect(this.audioContext.destination);
-      source.start(time);
+      // Add reverb mix
+      const dryGain = this.audioContext.createGain();
+      dryGain.gain.value = 0.9; // 90% dry signal
+      const wetGain = this.audioContext.createGain();
+      wetGain.gain.value = 0.1; // 10% reverb (reduced)
+
+      source.connect(gainNode);
+      gainNode.connect(dryGain).connect(this.audioContext.destination);
+      gainNode.connect(wetGain).connect(this.reverb).connect(this.audioContext.destination);
+
+      source.start(adjustedTime);
     });
   }
 
@@ -293,8 +332,10 @@ export default function App() {
 
   const [bpm, setBpm] = useState(100);
   const [currentStep, setCurrentStep] = useState(-1);
+  const [showInstructions, setShowInstructions] = useState(false);
 
   const sequencerRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     const seq = new DrumSequencer({
@@ -305,9 +346,14 @@ export default function App() {
     sequencerRef.current = seq;
 
     async function load() {
-      await seq.loadSample("kick", "/samples/kick.wav");
-      await seq.loadSample("snare", "/samples/snare.wav");
-      await seq.loadSample("hihat", "/samples/hihat.wav");
+      // use imported asset URLs (Vite handles fingerprinted paths)
+      await seq.loadSample("kick", kickSample);
+      await seq.loadSample("snare", snareSample);
+      await seq.loadSample("hihat", hihatSample);
+      await seq.loadSample("surdu_low_normal", surdu_low_normal);
+      await seq.loadSample("surdu_low_accented", surdu_low_accented);
+      await seq.loadSample("surdu_high_normal", surdu_high_normal);
+      await seq.loadSample("surdu_high_accented", surdu_high_accented);
     }
 
     load();
@@ -324,6 +370,36 @@ export default function App() {
       sequencerRef.current.bpm = bpm;
     }
   }, [bpm]);
+
+  const savePattern = () => {
+    const dataStr = JSON.stringify(pattern, null, 2);
+    const dataUri = 'data:application/json;charset=utf-8,' + encodeURIComponent(dataStr);
+    const exportFileDefaultName = 'pattern.json';
+    const linkElement = document.createElement('a');
+    linkElement.setAttribute('href', dataUri);
+    linkElement.setAttribute('download', exportFileDefaultName);
+    linkElement.click();
+  };
+
+  const loadPattern = () => {
+    fileInputRef.current.click();
+  };
+
+  const handleFileChange = (event) => {
+    const file = event.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const loadedPattern = JSON.parse(e.target.result);
+          setPattern(loadedPattern);
+        } catch (error) {
+          alert('Invalid JSON file');
+        }
+      };
+      reader.readAsText(file);
+    }
+  };
 
   const start = () => {
     const seq = sequencerRef.current;
@@ -354,7 +430,9 @@ export default function App() {
     }));
   };
 
-  return (
+  return showInstructions ? (
+    <Instructions onBack={() => setShowInstructions(false)} />
+  ) : (
     <div style={{ padding: 20 }}>
       <h2>Drum Machine</h2>
 
@@ -375,6 +453,7 @@ export default function App() {
 
       <button onClick={start}>Play</button>
       <button onClick={stop} style={{ marginLeft: 10 }}>Stop</button>
+      <button onClick={() => setShowInstructions(true)} style={{ marginLeft: 10 }}>Instructions</button>
 
       <GridEditor
         pattern={pattern}
@@ -382,9 +461,11 @@ export default function App() {
         currentStep={currentStep}
       />
 
-      <pre style={{ marginTop: 20 }}>
-        {JSON.stringify(pattern, null, 2)}
-      </pre>
+      <div style={{ marginTop: 20 }}>
+        <button onClick={savePattern}>Save Pattern</button>
+        <button onClick={loadPattern} style={{ marginLeft: 10 }}>Load Pattern</button>
+        <input type="file" ref={fileInputRef} style={{ display: 'none' }} onChange={handleFileChange} accept=".json" />
+      </div>
     </div>
   );
 }
